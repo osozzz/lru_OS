@@ -9,56 +9,64 @@ segmentos =[('.text', 0x00, 0x1A),
             ]
 
 def procesar(segmentos, reqs, marcos_libres):
-    tamano_pagina = 16
-    paginas_en_memoria = {}        # num_pagina -> marco
-    marco_a_pagina = {}            # marco -> num_pagina
-    historial_uso = []             # lista LRU
+    pagina_tam = 16  # tamaño de una página en palabras
+    tabla_paginas = {}  # mapea páginas cargadas: (segmento, num_pagina) -> marco
+    uso_reciente = []   # lista que mantiene orden de uso más reciente (LRU)
+    marco_a_pagina = {}  # marco -> (segmento, num_pagina)
     resultados = []
 
-    def es_valida(direccion):
-        for seg in segmentos:
-            nombre, inicio, longitud = seg
-            if inicio <= direccion < inicio + longitud:
-                return True
-        return False
+    for req in reqs:
+        # Encontrar a qué segmento pertenece la dirección
+        segmento_encontrado = None
+        for nombre, base, limite in segmentos:
+            if base <= req < base + limite:
+                segmento_encontrado = (nombre, base)
+                break
 
-    def direccion_fisica(marco, offset):
-        if marco == 0:
-            return 0x20 + offset
-        elif marco == 1:
-            return 0x10 + offset
-        else:
-            return offset
-
-    for ref in reqs:
-        if not es_valida(ref):
-            resultados.append((ref, 0x1FF, "Segmentation Fault"))
+        if not segmento_encontrado:
+            # Dirección fuera de los límites de todos los segmentos
+            resultados.append((req, 0x1FF, "Segmentation Fault"))
             continue
 
-        pagina = ref // tamano_pagina
-        offset = ref % tamano_pagina
+        nombre_seg, base = segmento_encontrado
+        desplazamiento = req - base
+        num_pagina = desplazamiento // pagina_tam
+        offset = desplazamiento % pagina_tam
 
-        if pagina in paginas_en_memoria:
-            marco = paginas_en_memoria[pagina]
-            if pagina in historial_uso:
-                historial_uso.remove(pagina)
-            historial_uso.append(pagina)
-            resultados.append((ref, direccion_fisica(marco, offset), "Marco ya estaba asignado"))
+        clave_pagina = (nombre_seg, num_pagina)
+
+        if clave_pagina in tabla_paginas:
+            # Página ya está en memoria
+            marco = tabla_paginas[clave_pagina]
+            direccion_fisica = marco * pagina_tam + offset
+            resultados.append((req, direccion_fisica, "Marco ya estaba asignado"))
+
+            # Actualizar uso reciente
+            if clave_pagina in uso_reciente:
+                uso_reciente.remove(clave_pagina)
+            uso_reciente.append(clave_pagina)
+
         else:
             if marcos_libres:
+                # Hay marcos disponibles
                 marco = marcos_libres.pop(0)
-                paginas_en_memoria[pagina] = marco
-                marco_a_pagina[marco] = pagina
-                historial_uso.append(pagina)
-                resultados.append((ref, direccion_fisica(marco, offset), "Marco libre asignado"))
+                tabla_paginas[clave_pagina] = marco
+                marco_a_pagina[marco] = clave_pagina
+                direccion_fisica = marco * pagina_tam + offset
+                resultados.append((req, direccion_fisica, "Marco libre asignado"))
             else:
-                pagina_remover = historial_uso.pop(0)
-                marco_reemplazo = paginas_en_memoria[pagina_remover]
-                del paginas_en_memoria[pagina_remover]
-                paginas_en_memoria[pagina] = marco_reemplazo
-                marco_a_pagina[marco_reemplazo] = pagina
-                historial_uso.append(pagina)
-                resultados.append((ref, direccion_fisica(marco_reemplazo, offset), "Marco asignado"))
+                # Reemplazo con LRU
+                pagina_lru = uso_reciente.pop(0)
+                marco = tabla_paginas[pagina_lru]
+                del tabla_paginas[pagina_lru]
+
+                # Asignar el nuevo
+                tabla_paginas[clave_pagina] = marco
+                marco_a_pagina[marco] = clave_pagina
+                direccion_fisica = marco * pagina_tam + offset
+                resultados.append((req, direccion_fisica, "Marco asignado"))
+
+            uso_reciente.append(clave_pagina)
 
     return resultados
     
